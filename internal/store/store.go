@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	_ "modernc.org/sqlite"
 	"strings"
+
+	_ "modernc.org/sqlite"
 )
 
 type Store struct{ db *sql.DB }
@@ -269,6 +270,11 @@ func (s *Store) lastWinnerStreak(ctx context.Context, tx *sql.Tx, chatID int64) 
 		return 0, 0, err
 	}
 	return lastWinnerID, streak, nil
+}
+
+func (s *Store) UpdateWinnerText(ctx context.Context, id int64, text string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE draws SET text=? WHERE id=?`, text, id)
+	return err
 }
 
 func (s *Store) TodayWinner(ctx context.Context, chatID int64, dt string) (Winner, error) {

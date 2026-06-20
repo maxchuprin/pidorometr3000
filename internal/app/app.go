@@ -182,11 +182,7 @@ func (a *App) cmdList(ctx context.Context, chatID int64) {
 	var b strings.Builder
 	b.WriteString("👥 Участники:\n")
 	for i, u := range users {
-		mark := ""
-		if u.IsAdmin {
-			mark = " 👑"
-		}
-		b.WriteString(fmt.Sprintf("%d. %s%s\n", i+1, store.DisplayName(u), mark))
+		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, store.DisplayName(u)))
 	}
 	a.reply(chatID, b.String())
 }
@@ -213,8 +209,7 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 		loc = a.loc
 	}
 	dt := time.Now().In(loc).Format("2006-01-02")
-	text := texts.Reason()
-	w, err := a.st.PickWinner(ctx, chatID, dt, text, manual, false)
+	w, err := a.st.PickWinner(ctx, chatID, dt, "", manual, false)
 	if err != nil {
 		if strings.Contains(err.Error(), "already") {
 			a.reply(chatID, "Сегодня розыгрыш уже был. Посмотреть: /today")
@@ -226,6 +221,10 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 		}
 		a.reply(chatID, "Ошибка розыгрыша: "+err.Error())
 		return store.Winner{}, err
+	}
+	w.Text = texts.ReasonForName(store.DisplayName(w.User))
+	if err := a.st.UpdateWinnerText(ctx, w.ID, w.Text); err != nil {
+		a.log.Error("update winner text", "err", err)
 	}
 	a.replyHTML(chatID, a.renderWinner(st, w))
 	return w, nil
@@ -273,7 +272,7 @@ func (a *App) cmdSettings(ctx context.Context, chatID int64) {
 		a.reply(chatID, err.Error())
 		return
 	}
-	a.reply(chatID, fmt.Sprintf("⚙️ Настройки:\nНазвание: %s\nВремя: %s\nЧасовой пояс: %s\nИсключать админов: %v\nАвторегистрация: %v", st.Title, st.DrawTime, st.Timezone, st.ExcludeAdmins, st.AutoRegister))
+	a.reply(chatID, fmt.Sprintf("⚙️ Настройки:\nНазвание: %s\nВремя: %s\nЧасовой пояс: %s\nАвторегистрация: %v", st.Title, st.DrawTime, st.Timezone, st.AutoRegister))
 }
 func (a *App) cmdSetTime(ctx context.Context, chatID int64, args string) {
 	if !regexp.MustCompile(`^\d{2}:\d{2}$`).MatchString(args) {
