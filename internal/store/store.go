@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"strings"
-
 	_ "modernc.org/sqlite"
+	"strings"
 )
 
 type Store struct{ db *sql.DB }
@@ -211,38 +210,27 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 		return Winner{}, errors.New("no active users")
 	}
 
-	lastMap := map[int64]string{}
-	lr, err := tx.QueryContext(ctx, `SELECT telegram_id, MAX(dt) FROM draws WHERE chat_id=? GROUP BY telegram_id`, chatID)
-	if err != nil {
-		return Winner{}, err
-	}
-	for lr.Next() {
-		var id int64
-		var d sql.NullString
-		if err := lr.Scan(&id, &d); err != nil {
-			lr.Close()
+	// Чистый рандом: каждый активный участник имеет одинаковый шанс.
+	// Единственное ограничение: один и тот же участник не может победить больше 3 раз подряд.
+	pool := candidates
+	if len(candidates) > 1 {
+		lastWinnerID, streak, err := s.lastWinnerStreak(ctx, tx, chatID)
+		if err != nil {
 			return Winner{}, err
 		}
-		if d.Valid {
-			lastMap[id] = d.String
+		if streak >= 3 {
+			filtered := make([]User, 0, len(candidates)-1)
+			for _, c := range candidates {
+				if c.TelegramID != lastWinnerID {
+					filtered = append(filtered, c)
+				}
+			}
+			if len(filtered) > 0 {
+				pool = filtered
+			}
 		}
 	}
-	lr.Close()
 
-	minDate := "9999-99-99"
-	pool := make([]User, 0, len(candidates))
-	for _, c := range candidates {
-		d := lastMap[c.TelegramID]
-		if d == "" {
-			d = "0000-00-00"
-		}
-		if d < minDate {
-			minDate = d
-			pool = []User{c}
-		} else if d == minDate {
-			pool = append(pool, c)
-		}
-	}
 	winner := pool[rand.Intn(len(pool))]
 	res, err := tx.ExecContext(ctx, `INSERT INTO draws(chat_id,dt,telegram_id,text,manual) VALUES(?,?,?,?,?)`, chatID, dt, winner.TelegramID, text, boolInt(manual))
 	if err != nil {
@@ -253,6 +241,34 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 		return Winner{}, err
 	}
 	return Winner{ID: id, Date: dt, User: winner, Text: text}, nil
+}
+
+func (s *Store) lastWinnerStreak(ctx context.Context, tx *sql.Tx, chatID int64) (int64, int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT telegram_id FROM draws WHERE chat_id=? ORDER BY dt DESC, id DESC LIMIT 3`, chatID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	var lastWinnerID int64
+	streak := 0
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, 0, err
+		}
+		if streak == 0 {
+			lastWinnerID = id
+		}
+		if id != lastWinnerID {
+			break
+		}
+		streak++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	return lastWinnerID, streak, nil
 }
 
 func (s *Store) TodayWinner(ctx context.Context, chatID int64, dt string) (Winner, error) {

@@ -29,7 +29,7 @@ func Load() (Config, error) {
 		Timezone:             getenv("TIMEZONE", "Asia/Aqtobe"),
 		DefaultDrawTime:      getenv("DEFAULT_DRAW_TIME", "09:00"),
 		DefaultTitle:         getenv("DEFAULT_TITLE", "Пидор дня"),
-		DefaultExcludeAdmins: getenvBool("DEFAULT_EXCLUDE_ADMINS", true),
+		DefaultExcludeAdmins: getenvBool("DEFAULT_EXCLUDE_ADMINS", false),
 		Debug:                getenvBool("DEBUG", false),
 	}
 	if cfg.BotToken == "" {

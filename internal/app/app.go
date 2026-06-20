@@ -140,8 +140,6 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 		a.cmdSetTime(ctx, m.Chat.ID, args)
 	case "settitle":
 		a.cmdSetTitle(ctx, m.Chat.ID, args)
-	case "excludeadmins":
-		a.cmdExcludeAdmins(ctx, m.Chat.ID, args)
 	case "autoregister":
 		a.cmdAutoRegister(ctx, m.Chat.ID, args)
 	default:
@@ -150,25 +148,11 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 }
 
 func (a *App) ensureChat(ctx context.Context, chatID int64) error {
-	return a.st.EnsureChat(ctx, store.ChatSettings{ChatID: chatID, Title: a.cfg.DefaultTitle, DrawTime: a.cfg.DefaultDrawTime, Timezone: a.cfg.Timezone, ExcludeAdmins: a.cfg.DefaultExcludeAdmins, AutoRegister: true})
+	return a.st.EnsureChat(ctx, store.ChatSettings{ChatID: chatID, Title: a.cfg.DefaultTitle, DrawTime: a.cfg.DefaultDrawTime, Timezone: a.cfg.Timezone, ExcludeAdmins: false, AutoRegister: true})
 }
 
 func (a *App) registerFromMessage(ctx context.Context, m *tgbotapi.Message) error {
-	isAdmin := a.isAdmin(m.Chat.ID, m.From.ID)
-	return a.st.UpsertUser(ctx, store.User{TelegramID: m.From.ID, ChatID: m.Chat.ID, Username: store.NewNullString(m.From.UserName), FirstName: store.NewNullString(m.From.FirstName), LastName: store.NewNullString(m.From.LastName), IsAdmin: isAdmin, Active: true})
-}
-
-func (a *App) isAdmin(chatID, userID int64) bool {
-	admins, err := a.bot.GetChatAdministrators(tgbotapi.ChatAdministratorsConfig{ChatConfig: tgbotapi.ChatConfig{ChatID: chatID}})
-	if err != nil {
-		return false
-	}
-	for _, adm := range admins {
-		if adm.User != nil && adm.User.ID == userID {
-			return true
-		}
-	}
-	return false
+	return a.st.UpsertUser(ctx, store.User{TelegramID: m.From.ID, ChatID: m.Chat.ID, Username: store.NewNullString(m.From.UserName), FirstName: store.NewNullString(m.From.FirstName), LastName: store.NewNullString(m.From.LastName), IsAdmin: false, Active: true})
 }
 
 func (a *App) cmdRegister(ctx context.Context, m *tgbotapi.Message) {
@@ -230,7 +214,7 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 	}
 	dt := time.Now().In(loc).Format("2006-01-02")
 	text := texts.Reason()
-	w, err := a.st.PickWinner(ctx, chatID, dt, text, manual, st.ExcludeAdmins)
+	w, err := a.st.PickWinner(ctx, chatID, dt, text, manual, false)
 	if err != nil {
 		if strings.Contains(err.Error(), "already") {
 			a.reply(chatID, "Сегодня розыгрыш уже был. Посмотреть: /today")
@@ -322,9 +306,6 @@ func (a *App) cmdSetTitle(ctx context.Context, chatID int64, args string) {
 	}
 	a.reply(chatID, "Ок, новое название: "+args)
 }
-func (a *App) cmdExcludeAdmins(ctx context.Context, chatID int64, args string) {
-	a.setBool(ctx, chatID, args, a.st.SetExcludeAdmins, "Исключать админов")
-}
 func (a *App) cmdAutoRegister(ctx context.Context, chatID int64, args string) {
 	a.setBool(ctx, chatID, args, a.st.SetAutoRegister, "Авторегистрация")
 }
@@ -372,7 +353,6 @@ func (a *App) help(chatID int64) {
 /settings — настройки
 /settime 09:00 — время ежедневного розыгрыша
 /settitle Герой дня — изменить название конкурса
-/excludeadmins on|off — исключать админов
 /autoregister on|off — регистрировать тех, кто пишет в чат
 
 Важно: чтобы бот видел обычные сообщения, отключи Privacy Mode у бота в BotFather.`))
