@@ -146,7 +146,7 @@ func (s *Store) ListUsers(ctx context.Context, chatID int64, activeOnly bool) ([
 	q := `SELECT u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active,
           (SELECT COUNT(*) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS wins,
           (SELECT MAX(dt) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS last_win
-          FROM users u WHERE u.chat_id=$1 AND u.active = TRUE`
+          FROM users u WHERE u.chat_id=$1`
 
 	q += ` ORDER BY lower(COALESCE(u.first_name,u.username,''))`
 	rows, err := s.db.QueryContext(ctx, q, chatID)

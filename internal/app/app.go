@@ -383,7 +383,7 @@ func (a *App) sendWinnerSequence(chatID int64, st store.ChatSettings, w store.Wi
 	time.Sleep(1 * time.Second)
 
 	a.replyHTML(chatID, fmt.Sprintf(
-		"Причина: %s",
+		"<b>Причина:</b> %s",
 		html.EscapeString(w.Text),
 	))
 }
