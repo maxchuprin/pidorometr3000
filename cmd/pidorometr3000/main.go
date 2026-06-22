@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"net/http"
 	"os"
 
 	"pidorometr3000/internal/app"
@@ -10,6 +11,11 @@ import (
 )
 
 func main() {
+
+	go func() {
+		http.ListenAndServe(":"+os.Getenv("PORT"), nil)
+	}()
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg, err := config.Load()
 	if err != nil {
@@ -17,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := store.Open(cfg.DatabasePath)
+	db, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("db open error", "err", err)
 		os.Exit(1)

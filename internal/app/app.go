@@ -192,7 +192,7 @@ func (a *App) cmdToday(ctx context.Context, chatID int64) {
 	dt := time.Now().In(loc).Format("2006-01-02")
 	w, err := a.st.TodayWinner(ctx, chatID, dt)
 	if err == nil {
-		a.replyHTML(chatID, a.renderWinner(st, w))
+		a.sendWinnerSequence(chatID, st, w)
 		return
 	}
 	_, _ = a.draw(ctx, chatID, true)
@@ -226,12 +226,10 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 	if err := a.st.UpdateWinnerText(ctx, w.ID, w.Text); err != nil {
 		a.log.Error("update winner text", "err", err)
 	}
-	a.replyHTML(chatID, a.renderWinner(st, w))
+	a.sendWinnerSequence(chatID, st, w)
 	return w, nil
 }
-func (a *App) renderWinner(st store.ChatSettings, w store.Winner) string {
-	return fmt.Sprintf("%s\n\n<b>%s</b> — %s 🏆\n\nПричина: %s\n\n%s", html.EscapeString(texts.Intro()), html.EscapeString(st.Title), a.mention(w.User), html.EscapeString(w.Text), a.mention(w.User))
-}
+
 func (a *App) cmdRating(ctx context.Context, chatID int64) {
 	users, err := a.st.Rating(ctx, chatID, 20)
 	if err != nil {
@@ -371,3 +369,23 @@ func (a *App) replyHTML(chatID int64, text string) {
 // keep imports useful for future deterministic sorting in command output
 var _ = sort.Slice
 var _ = sql.ErrNoRows
+
+func (a *App) sendWinnerSequence(chatID int64, st store.ChatSettings, w store.Winner) {
+	a.reply(chatID, texts.Intro())
+
+	time.Sleep(1 * time.Second)
+
+	a.replyHTML(chatID, fmt.Sprintf(
+		"<b>%s</b> — %s 🏆",
+		html.EscapeString(st.Title),
+		a.mention(w.User),
+	))
+
+	time.Sleep(1 * time.Second)
+
+	a.replyHTML(chatID, fmt.Sprintf(
+		"Причина: %s\n\n%s",
+		html.EscapeString(w.Text),
+		a.mention(w.User),
+	))
+}

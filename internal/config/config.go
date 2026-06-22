@@ -12,7 +12,7 @@ import (
 
 type Config struct {
 	BotToken             string
-	DatabasePath         string
+	DatabaseURL          string
 	Timezone             string
 	DefaultDrawTime      string
 	DefaultTitle         string
@@ -25,7 +25,7 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		BotToken:             strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		DatabasePath:         getenv("DATABASE_PATH", "./pidorometr3000.db"),
+		DatabaseURL:          getenv("DATABASE_URL", ""),
 		Timezone:             getenv("TIMEZONE", "Asia/Aqtobe"),
 		DefaultDrawTime:      getenv("DEFAULT_DRAW_TIME", "09:00"),
 		DefaultTitle:         getenv("DEFAULT_TITLE", "Пидор дня"),
@@ -35,6 +35,10 @@ func Load() (Config, error) {
 	if cfg.BotToken == "" {
 		return cfg, errors.New("TELEGRAM_BOT_TOKEN is required")
 	}
+	if cfg.DatabaseURL == "" {
+		return cfg, errors.New("DATABASE_URL is required")
+	}
+
 	if _, err := time.LoadLocation(cfg.Timezone); err != nil {
 		return cfg, err
 	}

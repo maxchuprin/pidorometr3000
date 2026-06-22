@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 )
 
 type Store struct{ db *sql.DB }
@@ -42,11 +42,10 @@ type Winner struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)")
+	db, err := sql.Open("postgres", path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 	return &Store{db: db}, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
@@ -54,35 +53,35 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Migrate() error {
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS chats (
-  chat_id INTEGER PRIMARY KEY,
+  chat_id BIGINT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT 'Пидор дня',
   draw_time TEXT NOT NULL DEFAULT '09:00',
   timezone TEXT NOT NULL DEFAULT 'Asia/Aqtobe',
-  exclude_admins INTEGER NOT NULL DEFAULT 1,
-  auto_register INTEGER NOT NULL DEFAULT 1,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  exclude_admins BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_register BOOLEAN NOT NULL DEFAULT TRUE,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS users (
-  telegram_id INTEGER NOT NULL,
-  chat_id INTEGER NOT NULL,
+  telegram_id BIGINT NOT NULL,
+  chat_id BIGINT NOT NULL,
   username TEXT,
   first_name TEXT,
   last_name TEXT,
-  is_admin INTEGER NOT NULL DEFAULT 0,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DATETIME NOT NULL DEFAULT NOW(),
+  updated_at DATETIME NOT NULL DEFAULT NOW(),
   PRIMARY KEY (telegram_id, chat_id)
 );
 CREATE TABLE IF NOT EXISTS draws (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id INTEGER NOT NULL,
+  id SERIAL PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
   dt TEXT NOT NULL,
-  telegram_id INTEGER NOT NULL,
+  telegram_id BIGINT NOT NULL,
   text TEXT NOT NULL,
-  manual INTEGER NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  manual BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at DATETIME NOT NULL DEFAULT NOW(),
   UNIQUE(chat_id, dt)
 );
 CREATE INDEX IF NOT EXISTS idx_users_chat_active ON users(chat_id, active);
@@ -93,22 +92,22 @@ CREATE INDEX IF NOT EXISTS idx_draws_chat_dt ON draws(chat_id, dt);
 
 func (s *Store) EnsureChat(ctx context.Context, st ChatSettings) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO chats(chat_id,title,draw_time,timezone,exclude_admins,auto_register)
-VALUES(?,?,?,?,?,?)
-ON CONFLICT(chat_id) DO NOTHING`, st.ChatID, st.Title, st.DrawTime, st.Timezone, boolInt(st.ExcludeAdmins), boolInt(st.AutoRegister))
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(chat_id) DO NOTHING`, st.ChatID, st.Title, st.DrawTime, st.Timezone, st.ExcludeAdmins, st.AutoRegister)
 	return err
 }
 
 func (s *Store) UpsertUser(ctx context.Context, u User) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO users(telegram_id,chat_id,username,first_name,last_name,is_admin,active,updated_at)
-VALUES(?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
+VALUES($1,$2,$3,$4,$5,$6,true,NOW())
 ON CONFLICT(telegram_id, chat_id) DO UPDATE SET
  username=excluded.username, first_name=excluded.first_name, last_name=excluded.last_name,
- is_admin=excluded.is_admin, active=1, updated_at=CURRENT_TIMESTAMP`, u.TelegramID, u.ChatID, nullable(u.Username), nullable(u.FirstName), nullable(u.LastName), boolInt(u.IsAdmin))
+ is_admin=excluded.is_admin, active=1, updated_at=NOW()`, u.TelegramID, u.ChatID, nullable(u.Username), nullable(u.FirstName), nullable(u.LastName), u.IsAdmin)
 	return err
 }
 
 func (s *Store) SetActive(ctx context.Context, chatID, telegramID int64, active bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET active=?, updated_at=CURRENT_TIMESTAMP WHERE chat_id=? AND telegram_id=?`, boolInt(active), chatID, telegramID)
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET active=$1, updated_at=NOW() WHERE chat_id=$2 AND telegram_id=$3`, active, chatID, telegramID)
 	if err != nil {
 		return err
 	}
@@ -121,28 +120,28 @@ func (s *Store) SetActive(ctx context.Context, chatID, telegramID int64, active 
 
 func (s *Store) GetSettings(ctx context.Context, chatID int64) (ChatSettings, error) {
 	var st ChatSettings
-	var ex, ar int
-	err := s.db.QueryRowContext(ctx, `SELECT chat_id,title,draw_time,timezone,exclude_admins,auto_register FROM chats WHERE chat_id=?`, chatID).
+	var ex, ar bool
+	err := s.db.QueryRowContext(ctx, `SELECT chat_id,title,draw_time,timezone,exclude_admins,auto_register FROM chats WHERE chat_id=$1`, chatID).
 		Scan(&st.ChatID, &st.Title, &st.DrawTime, &st.Timezone, &ex, &ar)
-	st.ExcludeAdmins = ex == 1
-	st.AutoRegister = ar == 1
+	st.ExcludeAdmins = ex
+	st.AutoRegister = ar
 	return st, err
 }
 
 func (s *Store) SetDrawTime(ctx context.Context, chatID int64, drawTime string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chats SET draw_time=? WHERE chat_id=?`, drawTime, chatID)
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET draw_time=$1 WHERE chat_id=$2`, drawTime, chatID)
 	return err
 }
 func (s *Store) SetTitle(ctx context.Context, chatID int64, title string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chats SET title=? WHERE chat_id=?`, title, chatID)
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET title=$1 WHERE chat_id=$2`, title, chatID)
 	return err
 }
 func (s *Store) SetExcludeAdmins(ctx context.Context, chatID int64, v bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chats SET exclude_admins=? WHERE chat_id=?`, boolInt(v), chatID)
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET exclude_admins=$1 WHERE chat_id=$2`, v, chatID)
 	return err
 }
 func (s *Store) SetAutoRegister(ctx context.Context, chatID int64, v bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chats SET auto_register=? WHERE chat_id=?`, boolInt(v), chatID)
+	_, err := s.db.ExecContext(ctx, `UPDATE chats SET auto_register=$1 WHERE chat_id=$2`, v, chatID)
 	return err
 }
 
@@ -150,7 +149,7 @@ func (s *Store) ListUsers(ctx context.Context, chatID int64, activeOnly bool) ([
 	q := `SELECT u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active,
           (SELECT COUNT(*) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS wins,
           (SELECT MAX(dt) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS last_win
-          FROM users u WHERE u.chat_id=?`
+          FROM users u WHERE u.chat_id=$1`
 	if activeOnly {
 		q += ` AND u.active=1`
 	}
@@ -163,12 +162,12 @@ func (s *Store) ListUsers(ctx context.Context, chatID int64, activeOnly bool) ([
 	var out []User
 	for rows.Next() {
 		var u User
-		var adm, act int
+		var adm, act bool
 		if err := rows.Scan(&u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act, &u.WinCount, &u.LastWinDate); err != nil {
 			return nil, err
 		}
-		u.IsAdmin = adm == 1
-		u.Active = act == 1
+		u.IsAdmin = adm
+		u.Active = act
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -181,12 +180,12 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 	}
 	defer tx.Rollback()
 	var exists int
-	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM draws WHERE chat_id=? AND dt=?`, chatID, dt).Scan(&exists)
+	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM draws WHERE chat_id=$1 AND dt=$2`, chatID, dt).Scan(&exists)
 	if exists > 0 {
 		return Winner{}, errors.New("draw already exists for today")
 	}
 
-	q := `SELECT telegram_id,chat_id,username,first_name,last_name,is_admin,active FROM users WHERE chat_id=? AND active=1`
+	q := `SELECT telegram_id,chat_id,username,first_name,last_name,is_admin,active FROM users WHERE chat_id=$1 AND active=true`
 	if excludeAdmins {
 		q += ` AND is_admin=0`
 	}
@@ -197,13 +196,13 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 	var candidates []User
 	for rows.Next() {
 		var u User
-		var adm, act int
+		var adm, act bool
 		if err := rows.Scan(&u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act); err != nil {
 			rows.Close()
 			return Winner{}, err
 		}
-		u.IsAdmin = adm == 1
-		u.Active = act == 1
+		u.IsAdmin = adm
+		u.Active = act
 		candidates = append(candidates, u)
 	}
 	rows.Close()
@@ -233,11 +232,11 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 	}
 
 	winner := pool[rand.Intn(len(pool))]
-	res, err := tx.ExecContext(ctx, `INSERT INTO draws(chat_id,dt,telegram_id,text,manual) VALUES(?,?,?,?,?)`, chatID, dt, winner.TelegramID, text, boolInt(manual))
+	var id int64
+	err = tx.QueryRowContext(ctx, `INSERT INTO draws(chat_id,dt,telegram_id,text,manual) VALUES($1,$2,$3,$4,$5) RETURNING id`, chatID, dt, winner.TelegramID, text, manual).Scan(&id)
 	if err != nil {
 		return Winner{}, err
 	}
-	id, _ := res.LastInsertId()
 	if err := tx.Commit(); err != nil {
 		return Winner{}, err
 	}
@@ -245,7 +244,7 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 }
 
 func (s *Store) lastWinnerStreak(ctx context.Context, tx *sql.Tx, chatID int64) (int64, int, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT telegram_id FROM draws WHERE chat_id=? ORDER BY dt DESC, id DESC LIMIT 3`, chatID)
+	rows, err := tx.QueryContext(ctx, `SELECT telegram_id FROM draws WHERE chat_id=$1 ORDER BY dt DESC, id DESC LIMIT 3`, chatID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -273,19 +272,19 @@ func (s *Store) lastWinnerStreak(ctx context.Context, tx *sql.Tx, chatID int64) 
 }
 
 func (s *Store) UpdateWinnerText(ctx context.Context, id int64, text string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE draws SET text=? WHERE id=?`, text, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE draws SET text=$1 WHERE id=$2`, text, id)
 	return err
 }
 
 func (s *Store) TodayWinner(ctx context.Context, chatID int64, dt string) (Winner, error) {
 	var w Winner
 	var u User
-	var adm, act int
+	var adm, act bool
 	err := s.db.QueryRowContext(ctx, `SELECT d.id,d.dt,d.text,u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active
 FROM draws d JOIN users u ON u.chat_id=d.chat_id AND u.telegram_id=d.telegram_id
-WHERE d.chat_id=? AND d.dt=?`, chatID, dt).Scan(&w.ID, &w.Date, &w.Text, &u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act)
-	u.IsAdmin = adm == 1
-	u.Active = act == 1
+WHERE d.chat_id=$1 AND d.dt=$2`, chatID, dt).Scan(&w.ID, &w.Date, &w.Text, &u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act)
+	u.IsAdmin = adm
+	u.Active = act
 	w.User = u
 	return w, err
 }
@@ -293,7 +292,7 @@ WHERE d.chat_id=? AND d.dt=?`, chatID, dt).Scan(&w.ID, &w.Date, &w.Text, &u.Tele
 func (s *Store) Rating(ctx context.Context, chatID int64, limit int) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active,COUNT(d.id) wins,MAX(d.dt) last_win
 FROM users u LEFT JOIN draws d ON d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id
-WHERE u.chat_id=? GROUP BY u.telegram_id,u.chat_id ORDER BY wins DESC, last_win DESC LIMIT ?`, chatID, limit)
+WHERE u.chat_id=$1 GROUP BY u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active ORDER BY wins DESC, last_win DESC LIMIT $2`, chatID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -301,12 +300,12 @@ WHERE u.chat_id=? GROUP BY u.telegram_id,u.chat_id ORDER BY wins DESC, last_win 
 	var out []User
 	for rows.Next() {
 		var u User
-		var adm, act int
+		var adm, act bool
 		if err := rows.Scan(&u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act, &u.WinCount, &u.LastWinDate); err != nil {
 			return nil, err
 		}
-		u.IsAdmin = adm == 1
-		u.Active = act == 1
+		u.IsAdmin = adm
+		u.Active = act
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -315,7 +314,7 @@ WHERE u.chat_id=? GROUP BY u.telegram_id,u.chat_id ORDER BY wins DESC, last_win 
 func (s *Store) History(ctx context.Context, chatID int64, limit int) ([]Winner, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.dt,d.text,u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active
 FROM draws d JOIN users u ON u.chat_id=d.chat_id AND u.telegram_id=d.telegram_id
-WHERE d.chat_id=? ORDER BY d.dt DESC LIMIT ?`, chatID, limit)
+WHERE d.chat_id=$1 ORDER BY d.dt DESC LIMIT $2`, chatID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -324,12 +323,12 @@ WHERE d.chat_id=? ORDER BY d.dt DESC LIMIT ?`, chatID, limit)
 	for rows.Next() {
 		var w Winner
 		var u User
-		var adm, act int
+		var adm, act bool
 		if err := rows.Scan(&w.ID, &w.Date, &w.Text, &u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act); err != nil {
 			return nil, err
 		}
-		u.IsAdmin = adm == 1
-		u.Active = act == 1
+		u.IsAdmin = adm
+		u.Active = act
 		w.User = u
 		out = append(out, w)
 	}
@@ -337,7 +336,7 @@ WHERE d.chat_id=? ORDER BY d.dt DESC LIMIT ?`, chatID, limit)
 }
 
 func (s *Store) ActiveChats(ctx context.Context) ([]ChatSettings, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT chat_id,title,draw_time,timezone,exclude_admins,auto_register FROM chats WHERE enabled=1`)
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_id,title,draw_time,timezone,exclude_admins,auto_register FROM chats WHERE enabled=true`)
 	if err != nil {
 		return nil, err
 	}
@@ -345,12 +344,12 @@ func (s *Store) ActiveChats(ctx context.Context) ([]ChatSettings, error) {
 	var out []ChatSettings
 	for rows.Next() {
 		var st ChatSettings
-		var ex, ar int
+		var ex, ar bool
 		if err := rows.Scan(&st.ChatID, &st.Title, &st.DrawTime, &st.Timezone, &ex, &ar); err != nil {
 			return nil, err
 		}
-		st.ExcludeAdmins = ex == 1
-		st.AutoRegister = ar == 1
+		st.ExcludeAdmins = ex
+		st.AutoRegister = ar
 		out = append(out, st)
 	}
 	return out, rows.Err()
