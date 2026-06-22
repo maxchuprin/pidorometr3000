@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS chats (
   exclude_admins BOOLEAN NOT NULL DEFAULT TRUE,
   auto_register BOOLEAN NOT NULL DEFAULT TRUE,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at DATETIME NOT NULL DEFAULT NOW()
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS users (
   telegram_id BIGINT NOT NULL,
@@ -70,8 +70,8 @@ CREATE TABLE IF NOT EXISTS users (
   last_name TEXT,
   is_admin BOOLEAN NOT NULL DEFAULT FALSE,
   active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at DATETIME NOT NULL DEFAULT NOW(),
-  updated_at DATETIME NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
   PRIMARY KEY (telegram_id, chat_id)
 );
 CREATE TABLE IF NOT EXISTS draws (
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS draws (
   telegram_id BIGINT NOT NULL,
   text TEXT NOT NULL,
   manual BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at DATETIME NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   UNIQUE(chat_id, dt)
 );
 CREATE INDEX IF NOT EXISTS idx_users_chat_active ON users(chat_id, active);
