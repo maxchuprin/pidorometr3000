@@ -102,7 +102,7 @@ func (s *Store) UpsertUser(ctx context.Context, u User) error {
 VALUES($1,$2,$3,$4,$5,$6,true,NOW())
 ON CONFLICT(telegram_id, chat_id) DO UPDATE SET
  username=excluded.username, first_name=excluded.first_name, last_name=excluded.last_name,
- is_admin=excluded.is_admin, active=1, updated_at=NOW()`, u.TelegramID, u.ChatID, nullable(u.Username), nullable(u.FirstName), nullable(u.LastName), u.IsAdmin)
+ is_admin=excluded.is_admin, active=true, updated_at=NOW()`, u.TelegramID, u.ChatID, nullable(u.Username), nullable(u.FirstName), nullable(u.LastName), u.IsAdmin)
 	return err
 }
 
@@ -136,10 +136,7 @@ func (s *Store) SetTitle(ctx context.Context, chatID int64, title string) error 
 	_, err := s.db.ExecContext(ctx, `UPDATE chats SET title=$1 WHERE chat_id=$2`, title, chatID)
 	return err
 }
-func (s *Store) SetExcludeAdmins(ctx context.Context, chatID int64, v bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chats SET exclude_admins=$1 WHERE chat_id=$2`, v, chatID)
-	return err
-}
+
 func (s *Store) SetAutoRegister(ctx context.Context, chatID int64, v bool) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chats SET auto_register=$1 WHERE chat_id=$2`, v, chatID)
 	return err
@@ -149,10 +146,8 @@ func (s *Store) ListUsers(ctx context.Context, chatID int64, activeOnly bool) ([
 	q := `SELECT u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active,
           (SELECT COUNT(*) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS wins,
           (SELECT MAX(dt) FROM draws d WHERE d.chat_id=u.chat_id AND d.telegram_id=u.telegram_id) AS last_win
-          FROM users u WHERE u.chat_id=$1`
-	if activeOnly {
-		q += ` AND u.active=1`
-	}
+          FROM users u WHERE u.chat_id=$1 AND u.active = TRUE`
+
 	q += ` ORDER BY lower(COALESCE(u.first_name,u.username,''))`
 	rows, err := s.db.QueryContext(ctx, q, chatID)
 	if err != nil {
@@ -186,9 +181,7 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 	}
 
 	q := `SELECT telegram_id,chat_id,username,first_name,last_name,is_admin,active FROM users WHERE chat_id=$1 AND active=true`
-	if excludeAdmins {
-		q += ` AND is_admin=0`
-	}
+
 	rows, err := tx.QueryContext(ctx, q, chatID)
 	if err != nil {
 		return Winner{}, err
