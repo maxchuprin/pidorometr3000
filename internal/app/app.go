@@ -13,8 +13,6 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/robfig/cron/v3"
-
 	"pidorometr3000/internal/config"
 	"pidorometr3000/internal/store"
 	"pidorometr3000/internal/texts"
@@ -384,8 +382,7 @@ func (a *App) sendWinnerSequence(chatID int64, st store.ChatSettings, w store.Wi
 	time.Sleep(1 * time.Second)
 
 	a.replyHTML(chatID, fmt.Sprintf(
-		"Причина: %s\n\n%s",
+		"Причина: %s",
 		html.EscapeString(w.Text),
-		a.mention(w.User),
 	))
 }

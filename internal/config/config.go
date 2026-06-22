@@ -27,8 +27,8 @@ func Load() (Config, error) {
 		BotToken:             strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		DatabaseURL:          getenv("DATABASE_URL", ""),
 		Timezone:             getenv("TIMEZONE", "Asia/Aqtobe"),
-		DefaultDrawTime:      getenv("DEFAULT_DRAW_TIME", "09:00"),
-		DefaultTitle:         getenv("DEFAULT_TITLE", "Пидор дня"),
+		DefaultDrawTime:      getenv("DEFAULT_DRAW_TIME", "07:00"),
+		DefaultTitle:         getenv("DEFAULT_TITLE", "Қотақбас дня"),
 		DefaultExcludeAdmins: getenvBool("DEFAULT_EXCLUDE_ADMINS", false),
 		Debug:                getenvBool("DEBUG", false),
 	}
