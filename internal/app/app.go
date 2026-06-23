@@ -221,7 +221,7 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 		a.reply(chatID, "Ошибка розыгрыша: "+err.Error())
 		return store.Winner{}, err
 	}
-	w.Text = texts.ReasonForName(store.DisplayName(w.User))
+	w.Text = texts.ReasonForUser(w.User.Username.String, store.DisplayName(w.User))
 	if err := a.st.UpdateWinnerText(ctx, w.ID, w.Text); err != nil {
 		a.log.Error("update winner text", "err", err)
 	}
