@@ -1,20 +1,17 @@
 FROM golang:1.24-bookworm AS builder
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -tags netgo -ldflags="-s -w" -o /run-app ./cmd/pidorometr3000
+RUN CGO_ENABLED=0 GOOS=linux go build -o /run-app ./cmd/pidorometr3000
 
 FROM debian:bookworm
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
-    && update-ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
 
 COPY --from=builder /run-app /run-app
 
