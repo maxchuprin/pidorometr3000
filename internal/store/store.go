@@ -13,6 +13,16 @@ import (
 
 type Store struct{ db *sql.DB }
 
+var (
+	// ErrAutomaticDrawExists means the official daily draw has already been held.
+	ErrAutomaticDrawExists = errors.New("automatic draw already exists for today")
+	// ErrManualDrawLimitReached means a chat has already used all manual draws for the day.
+	ErrManualDrawLimitReached = errors.New("manual draw limit reached for today")
+	ErrNoActiveUsers          = errors.New("no active users")
+)
+
+const manualDrawLimitPerDay = 5
+
 type User struct {
 	TelegramID  int64
 	ChatID      int64
@@ -81,11 +91,17 @@ CREATE TABLE IF NOT EXISTS draws (
   telegram_id BIGINT NOT NULL,
   text TEXT NOT NULL,
   manual BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  UNIQUE(chat_id, dt)
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+-- Earlier versions allowed just one draw per chat and date. Manual draws now have
+-- their own daily limit, while the automatic draw remains limited to one per day.
+ALTER TABLE draws DROP CONSTRAINT IF EXISTS draws_chat_id_dt_key;
 CREATE INDEX IF NOT EXISTS idx_users_chat_active ON users(chat_id, active);
 CREATE INDEX IF NOT EXISTS idx_draws_chat_dt ON draws(chat_id, dt);
+CREATE INDEX IF NOT EXISTS idx_draws_chat_dt_manual ON draws(chat_id, dt, manual);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_draws_one_automatic_per_day
+  ON draws(chat_id, dt)
+  WHERE manual = FALSE;
 `)
 	return err
 }
@@ -174,33 +190,60 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 		return Winner{}, err
 	}
 	defer tx.Rollback()
-	var exists int
-	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM draws WHERE chat_id=$1 AND dt=$2`, chatID, dt).Scan(&exists)
-	if exists > 0 {
-		return Winner{}, errors.New("draw already exists for today")
+
+	// Serializes draws within one chat. It makes the five-per-day manual limit
+	// reliable even when several /force commands arrive at the same time.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, chatID); err != nil {
+		return Winner{}, err
+	}
+
+	if manual {
+		var count int
+		if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM draws
+WHERE chat_id=$1 AND dt=$2 AND manual=TRUE`, chatID, dt).Scan(&count); err != nil {
+			return Winner{}, err
+		}
+		if count >= manualDrawLimitPerDay {
+			return Winner{}, ErrManualDrawLimitReached
+		}
+	} else {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM draws WHERE chat_id=$1 AND dt=$2 AND manual=FALSE
+)`, chatID, dt).Scan(&exists); err != nil {
+			return Winner{}, err
+		}
+		if exists {
+			return Winner{}, ErrAutomaticDrawExists
+		}
 	}
 
 	q := `SELECT telegram_id,chat_id,username,first_name,last_name,is_admin,active FROM users WHERE chat_id=$1 AND active=true`
-
 	rows, err := tx.QueryContext(ctx, q, chatID)
 	if err != nil {
 		return Winner{}, err
 	}
+	defer rows.Close()
+
 	var candidates []User
 	for rows.Next() {
 		var u User
 		var adm, act bool
 		if err := rows.Scan(&u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act); err != nil {
-			rows.Close()
 			return Winner{}, err
 		}
 		u.IsAdmin = adm
 		u.Active = act
 		candidates = append(candidates, u)
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Winner{}, err
+	}
 	if len(candidates) == 0 {
-		return Winner{}, errors.New("no active users")
+		return Winner{}, ErrNoActiveUsers
 	}
 
 	// Чистый рандом: каждый активный участник имеет одинаковый шанс.
@@ -226,8 +269,13 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 
 	winner := pool[rand.Intn(len(pool))]
 	var id int64
-	err = tx.QueryRowContext(ctx, `INSERT INTO draws(chat_id,dt,telegram_id,text,manual) VALUES($1,$2,$3,$4,$5) RETURNING id`, chatID, dt, winner.TelegramID, text, manual).Scan(&id)
+	err = tx.QueryRowContext(ctx, `
+INSERT INTO draws(chat_id,dt,telegram_id,text,manual)
+VALUES($1,$2,$3,$4,$5)
+RETURNING id`, chatID, dt, winner.TelegramID, text, manual).Scan(&id)
 	if err != nil {
+		// The partial unique index is an additional cross-process safeguard for
+		// automatic draws. The advisory lock above handles the normal path.
 		return Winner{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -275,7 +323,7 @@ func (s *Store) TodayWinner(ctx context.Context, chatID int64, dt string) (Winne
 	var adm, act bool
 	err := s.db.QueryRowContext(ctx, `SELECT d.id,d.dt,d.text,u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active
 FROM draws d JOIN users u ON u.chat_id=d.chat_id AND u.telegram_id=d.telegram_id
-WHERE d.chat_id=$1 AND d.dt=$2`, chatID, dt).Scan(&w.ID, &w.Date, &w.Text, &u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act)
+WHERE d.chat_id=$1 AND d.dt=$2 AND d.manual=FALSE`, chatID, dt).Scan(&w.ID, &w.Date, &w.Text, &u.TelegramID, &u.ChatID, &u.Username, &u.FirstName, &u.LastName, &adm, &act)
 	u.IsAdmin = adm
 	u.Active = act
 	w.User = u
@@ -307,7 +355,7 @@ WHERE u.chat_id=$1 GROUP BY u.telegram_id,u.chat_id,u.username,u.first_name,u.la
 func (s *Store) History(ctx context.Context, chatID int64, limit int) ([]Winner, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.dt,d.text,u.telegram_id,u.chat_id,u.username,u.first_name,u.last_name,u.is_admin,u.active
 FROM draws d JOIN users u ON u.chat_id=d.chat_id AND u.telegram_id=d.telegram_id
-WHERE d.chat_id=$1 ORDER BY d.dt DESC LIMIT $2`, chatID, limit)
+WHERE d.chat_id=$1 ORDER BY d.dt DESC, d.id DESC LIMIT $2`, chatID, limit)
 	if err != nil {
 		return nil, err
 	}

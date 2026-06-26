@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/robfig/cron/v3"
 	"html"
@@ -194,7 +195,7 @@ func (a *App) cmdToday(ctx context.Context, chatID int64) {
 		a.sendWinnerSequence(chatID, st, w)
 		return
 	}
-	_, _ = a.draw(ctx, chatID, true)
+	_, _ = a.draw(ctx, chatID, false)
 }
 func (a *App) cmdForce(ctx context.Context, chatID int64) { _, _ = a.draw(ctx, chatID, true) }
 func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner, error) {
@@ -210,11 +211,15 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 	dt := time.Now().In(loc).Format("2006-01-02")
 	w, err := a.st.PickWinner(ctx, chatID, dt, "", manual, false)
 	if err != nil {
-		if strings.Contains(err.Error(), "already") {
+		if errors.Is(err, store.ErrManualDrawLimitReached) {
+			a.reply(chatID, "На сегодня лимит достигнут.")
+			return store.Winner{}, err
+		}
+		if errors.Is(err, store.ErrAutomaticDrawExists) {
 			a.reply(chatID, "Сегодня розыгрыш уже был. Посмотреть: /today")
 			return store.Winner{}, err
 		}
-		if strings.Contains(err.Error(), "no active") {
+		if errors.Is(err, store.ErrNoActiveUsers) {
 			a.reply(chatID, "Некого выбирать. Пусть участники напишут /register")
 			return store.Winner{}, err
 		}
@@ -343,7 +348,7 @@ func (a *App) help(chatID int64) {
 /leave — выйти из розыгрыша
 /list — участники
 /today — показать или провести сегодняшний розыгрыш
-/force — попробовать провести розыгрыш сегодня
+/force — провести ручной розыгрыш (до 5 раз в день)
 /rating — рейтинг
 /history — история
 /settings — настройки
