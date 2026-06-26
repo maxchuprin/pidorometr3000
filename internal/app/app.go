@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/robfig/cron/v3"
@@ -101,8 +103,9 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 	if m.Chat == nil || m.From == nil {
 		return
 	}
+
 	if m.Chat.IsPrivate() {
-		a.reply(m.Chat.ID, "Добавь меня в группу и напиши /register. В личке розыгрыш не имеет смысла 🙂")
+		a.handlePrivateMessage(ctx, m)
 		return
 	}
 
@@ -117,6 +120,10 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 	}
 	cmd := strings.ToLower(m.Command())
 	args := strings.TrimSpace(m.CommandArguments())
+	if strings.HasPrefix(cmd, "bonus_") {
+		a.cmdBonus(ctx, m, strings.TrimPrefix(cmd, "bonus_"))
+		return
+	}
 	switch cmd {
 	case "start", "help":
 		a.help(m.Chat.ID)
@@ -145,6 +152,102 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 	default:
 		a.reply(m.Chat.ID, "Не знаю такую команду. Напиши /help")
 	}
+}
+
+func (a *App) handlePrivateMessage(ctx context.Context, m *tgbotapi.Message) {
+	if !m.IsCommand() {
+		a.reply(m.Chat.ID, "В личке доступны: /myid и /grant (только создателю бота).")
+		return
+	}
+
+	switch strings.ToLower(m.Command()) {
+	case "myid":
+		a.reply(m.Chat.ID, fmt.Sprintf("Твой Telegram ID: %d", m.From.ID))
+	case "grant":
+		a.cmdGrant(ctx, m)
+	default:
+		a.reply(m.Chat.ID, "В личке доступны: /myid и /grant (только создателю бота).")
+	}
+}
+
+func (a *App) cmdGrant(ctx context.Context, m *tgbotapi.Message) {
+	if a.cfg.OwnerTelegramID == 0 {
+		a.reply(m.Chat.ID, "Бонусные команды не настроены: добавь OWNER_TELEGRAM_ID в переменные окружения и перезапусти бота.")
+		return
+	}
+	if m.From.ID != a.cfg.OwnerTelegramID {
+		a.reply(m.Chat.ID, "Эта команда доступна только создателю бота.")
+		return
+	}
+
+	for range 5 {
+		token, err := newBonusToken()
+		if err != nil {
+			a.log.Error("generate bonus token", "err", err)
+			a.reply(m.Chat.ID, "Не удалось создать секретную команду.")
+			return
+		}
+		expiresAt := time.Now().Add(a.cfg.BonusTokenTTL)
+		if err := a.st.CreateBonusToken(ctx, token, expiresAt); err != nil {
+			// A collision is astronomically unlikely; retrying keeps this handler robust.
+			a.log.Warn("create bonus token", "err", err)
+			continue
+		}
+
+		expiresText := expiresAt.In(a.loc).Format("02.01.2006 15:04")
+		a.reply(m.Chat.ID, fmt.Sprintf("Создан дополнительный вызов:\n\n/bonus_%s\n\nКоманда одноразовая и действует до %s (%s).", token, expiresText, a.loc.String()))
+		return
+	}
+	a.reply(m.Chat.ID, "Не удалось создать секретную команду. Попробуй ещё раз.")
+}
+
+func newBonusToken() (string, error) {
+	buf := make([]byte, 8)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func (a *App) cmdBonus(ctx context.Context, m *tgbotapi.Message, token string) {
+	if token == "" {
+		a.reply(m.Chat.ID, "Некорректная бонусная команда.")
+		return
+	}
+
+	st, err := a.st.GetSettings(ctx, m.Chat.ID)
+	if err != nil {
+		a.reply(m.Chat.ID, "Чат не настроен. Напиши /help")
+		return
+	}
+	loc, err := time.LoadLocation(st.Timezone)
+	if err != nil {
+		loc = a.loc
+	}
+	dt := time.Now().In(loc).Format("2006-01-02")
+	w, err := a.st.PickBonusWinner(ctx, m.Chat.ID, dt, token, m.From.ID)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrBonusTokenUsed):
+			a.reply(m.Chat.ID, "Этот бонус уже был использован.")
+		case errors.Is(err, store.ErrBonusTokenExpired):
+			a.reply(m.Chat.ID, "Срок действия этого бонуса истёк.")
+		case errors.Is(err, store.ErrBonusTokenNotFound):
+			a.reply(m.Chat.ID, "Такой бонус не найден.")
+		case errors.Is(err, store.ErrNoActiveUsers):
+			a.reply(m.Chat.ID, "Некого выбирать. Пусть участники напишут /register")
+		default:
+			a.log.Error("bonus draw", "err", err)
+			a.reply(m.Chat.ID, "Ошибка бонусного розыгрыша.")
+		}
+		return
+	}
+
+	w.Text = texts.ReasonForUser(w.User.Username.String, store.DisplayName(w.User))
+	if err := a.st.UpdateWinnerText(ctx, w.ID, w.Text); err != nil {
+		a.log.Error("update bonus winner text", "err", err)
+	}
+	a.sendWinnerSequence(m.Chat.ID, st, w)
 }
 
 func (a *App) ensureChat(ctx context.Context, chatID int64) error {
@@ -212,7 +315,7 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 	w, err := a.st.PickWinner(ctx, chatID, dt, "", manual, false)
 	if err != nil {
 		if errors.Is(err, store.ErrManualDrawLimitReached) {
-			a.reply(chatID, "На сегодня лимит достигнут.")
+			a.reply(chatID, "На сегодня лимит достигнут.\n\n💸 Закинь 1000 ₸ создателю и получи ещё один шанс на розыгрыш. После оплаты отправь чек создателю — он выдаст одноразовую секретную команду.")
 			return store.Winner{}, err
 		}
 		if errors.Is(err, store.ErrAutomaticDrawExists) {
