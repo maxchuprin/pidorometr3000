@@ -95,7 +95,7 @@ func (a *App) checkScheduledDraws(ctx context.Context) {
 		if _, err := a.st.TodayWinner(ctx, ch.ChatID, dt); err == nil {
 			continue
 		}
-		_, _ = a.draw(ctx, ch.ChatID, false)
+		_, _ = a.draw(ctx, ch.ChatID, false, 0, "")
 	}
 }
 
@@ -136,7 +136,7 @@ func (a *App) handleMessage(ctx context.Context, m *tgbotapi.Message) {
 	case "today":
 		a.cmdToday(ctx, m.Chat.ID)
 	case "force":
-		a.cmdForce(ctx, m.Chat.ID)
+		a.cmdForce(ctx, m)
 	case "rating", "top":
 		a.cmdRating(ctx, m.Chat.ID)
 	case "history":
@@ -298,10 +298,20 @@ func (a *App) cmdToday(ctx context.Context, chatID int64) {
 		a.sendWinnerSequence(chatID, st, w)
 		return
 	}
-	_, _ = a.draw(ctx, chatID, false)
+	_, _ = a.draw(ctx, chatID, false, 0, "")
 }
-func (a *App) cmdForce(ctx context.Context, chatID int64) { _, _ = a.draw(ctx, chatID, true) }
-func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner, error) {
+
+func (a *App) cmdForce(ctx context.Context, m *tgbotapi.Message) {
+	requester := store.User{
+		TelegramID: m.From.ID,
+		Username:   store.NewNullString(m.From.UserName),
+		FirstName:  store.NewNullString(m.From.FirstName),
+		LastName:   store.NewNullString(m.From.LastName),
+	}
+	_, _ = a.draw(ctx, m.Chat.ID, true, m.From.ID, a.mention(requester))
+}
+
+func (a *App) draw(ctx context.Context, chatID int64, manual bool, requestedBy int64, requesterMention string) (store.Winner, error) {
 	st, err := a.st.GetSettings(ctx, chatID)
 	if err != nil {
 		a.reply(chatID, "Чат не настроен. Напиши /help")
@@ -312,10 +322,20 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 		loc = a.loc
 	}
 	dt := time.Now().In(loc).Format("2006-01-02")
-	w, err := a.st.PickWinner(ctx, chatID, dt, "", manual, false)
+	w, err := a.st.PickWinner(ctx, chatID, dt, "", manual, requestedBy)
 	if err != nil {
+		var cooldownErr *store.ForceCooldownError
+		if errors.As(err, &cooldownErr) {
+			message := fmt.Sprintf("Иди нахуй с такой наглостью. Следующий /force для тебя будет доступен через %s.", formatCooldown(cooldownErr.Remaining))
+			if requesterMention != "" {
+				a.replyHTML(chatID, requesterMention+", "+message)
+			} else {
+				a.reply(chatID, message)
+			}
+			return store.Winner{}, err
+		}
 		if errors.Is(err, store.ErrManualDrawLimitReached) {
-			a.reply(chatID, "На сегодня лимит достигнут.\n\n💸 «А не пошел бы он нахуй!» - сам иди нахуй, подумал создатель и снизил цену до символичных 100 тенге")
+			a.reply(chatID, "На сегодня лимит достигнут.\n\n💸 Закинь 1000 ₸ создателю и получи ещё один шанс на розыгрыш. После оплаты отправь чек создателю — он выдаст одноразовую секретную команду.")
 			return store.Winner{}, err
 		}
 		if errors.Is(err, store.ErrAutomaticDrawExists) {
@@ -335,6 +355,17 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool) (store.Winner
 	}
 	a.sendWinnerSequence(chatID, st, w)
 	return w, nil
+}
+
+func formatCooldown(remaining time.Duration) string {
+	if remaining <= 0 {
+		return "меньше минуты"
+	}
+	minutes := int((remaining + time.Minute - 1) / time.Minute)
+	if minutes == 1 {
+		return "1 минуту"
+	}
+	return fmt.Sprintf("%d мин.", minutes)
 }
 
 func (a *App) cmdRating(ctx context.Context, chatID int64) {

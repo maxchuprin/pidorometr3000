@@ -25,7 +25,21 @@ var (
 	ErrBonusTokenExpired      = errors.New("bonus token expired")
 )
 
-const manualDrawLimitPerDay = 5
+const (
+	manualDrawLimitPerDay = 5
+	manualForceCooldown   = 30 * time.Minute
+)
+
+// ForceCooldownError is returned when a user tries to invoke /force again before
+// their personal cooldown has elapsed. It only applies to normal /force draws,
+// never to automatic or paid bonus draws.
+type ForceCooldownError struct {
+	Remaining time.Duration
+}
+
+func (e *ForceCooldownError) Error() string {
+	return "manual force cooldown is active"
+}
 
 type User struct {
 	TelegramID  int64
@@ -104,6 +118,8 @@ CREATE TABLE IF NOT EXISTS draws (
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ALTER TABLE draws ADD COLUMN IF NOT EXISTS bonus BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE draws ADD COLUMN IF NOT EXISTS requested_by BIGINT;
+ALTER TABLE draws ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP;
 CREATE TABLE IF NOT EXISTS bonus_draw_tokens (
   id BIGSERIAL PRIMARY KEY,
   token TEXT NOT NULL UNIQUE,
@@ -119,6 +135,9 @@ ALTER TABLE draws DROP CONSTRAINT IF EXISTS draws_chat_id_dt_key;
 CREATE INDEX IF NOT EXISTS idx_users_chat_active ON users(chat_id, active);
 CREATE INDEX IF NOT EXISTS idx_draws_chat_dt ON draws(chat_id, dt);
 CREATE INDEX IF NOT EXISTS idx_draws_chat_dt_manual ON draws(chat_id, dt, manual);
+CREATE INDEX IF NOT EXISTS idx_draws_force_cooldown
+  ON draws(chat_id, requested_by, requested_at DESC)
+  WHERE manual = TRUE AND bonus = FALSE AND requested_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bonus_draw_tokens_active
   ON bonus_draw_tokens(expires_at)
   WHERE used_at IS NULL;
@@ -207,7 +226,7 @@ func (s *Store) ListUsers(ctx context.Context, chatID int64, activeOnly bool) ([
 	return out, rows.Err()
 }
 
-func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text string, manual bool, excludeAdmins bool) (Winner, error) {
+func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text string, manual bool, requestedBy int64) (Winner, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Winner{}, err
@@ -221,6 +240,32 @@ func (s *Store) PickWinner(ctx context.Context, chatID int64, dt string, text st
 	}
 
 	if manual {
+		// The lock above makes this check and the insert below atomic for a chat,
+		// so a user cannot bypass the cooldown by sending several /force messages
+		// at the same time.
+		if requestedBy != 0 {
+			var lastRequestedAt time.Time
+			err := tx.QueryRowContext(ctx, `
+SELECT requested_at
+FROM draws
+WHERE chat_id=$1
+  AND manual=TRUE
+  AND bonus=FALSE
+  AND requested_by=$2
+  AND requested_at IS NOT NULL
+ORDER BY requested_at DESC, id DESC
+LIMIT 1`, chatID, requestedBy).Scan(&lastRequestedAt)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return Winner{}, err
+			}
+			if err == nil {
+				remaining := manualForceCooldown - time.Since(lastRequestedAt)
+				if remaining > 0 {
+					return Winner{}, &ForceCooldownError{Remaining: remaining}
+				}
+			}
+		}
+
 		var count int
 		if err := tx.QueryRowContext(ctx, `
 SELECT COUNT(*)
@@ -293,9 +338,9 @@ SELECT EXISTS(
 	winner := pool[rand.Intn(len(pool))]
 	var id int64
 	err = tx.QueryRowContext(ctx, `
-INSERT INTO draws(chat_id,dt,telegram_id,text,manual)
-VALUES($1,$2,$3,$4,$5)
-RETURNING id`, chatID, dt, winner.TelegramID, text, manual).Scan(&id)
+INSERT INTO draws(chat_id,dt,telegram_id,text,manual,requested_by,requested_at)
+VALUES($1,$2,$3,$4,$5,NULLIF($6, 0),CASE WHEN $5 THEN NOW() ELSE NULL END)
+RETURNING id`, chatID, dt, winner.TelegramID, text, manual, requestedBy).Scan(&id)
 	if err != nil {
 		// The partial unique index is an additional cross-process safeguard for
 		// automatic draws. The advisory lock above handles the normal path.
