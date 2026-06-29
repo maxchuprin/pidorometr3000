@@ -335,7 +335,7 @@ func (a *App) draw(ctx context.Context, chatID int64, manual bool, requestedBy i
 			return store.Winner{}, err
 		}
 		if errors.Is(err, store.ErrManualDrawLimitReached) {
-			a.reply(chatID, "На сегодня лимит достигнут.\n\n💸 «А не пошел бы он нахуй!», сказал Момся - сам иди нахуй, подумал создатель и снизил цену до символичных 100 тенге")
+			a.reply(chatID, "На сегодня лимит достигнут.\n\n💸 Пять попыток вы уже проебали.\n\nШестая — по подписке: 100 ₸ и немного достоинства.")
 			return store.Winner{}, err
 		}
 		if errors.Is(err, store.ErrAutomaticDrawExists) {
